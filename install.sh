@@ -81,8 +81,6 @@ echo "==> Setting up the dashboard tab"
 # The bin/pip launcher can exist even when the Python pip module is broken.
 "$VENV/bin/python" -m pip install --disable-pip-version-check --quiet --upgrade pip
 "$VENV/bin/python" -m pip install --disable-pip-version-check --quiet "openvr==$PYOPENVR_VERSION" "pillow>=10.1"
-"$VENV/bin/python" -c "import openvr, PIL" || { echo "ERROR: dashboard imports failed" >&2; exit 1; }
-
 # Valve's own OpenVR loader for this CPU: for the tab (pyopenvr only bundles
 # x86_64) and for the recorder, which reads the lens data through it.
 echo "==> Fetching Valve's OpenVR loader ($OPENVR_ARCH)"
@@ -90,6 +88,15 @@ curl -fsSL -o "$LIB_DIR/libopenvr_api.so" \
     "https://raw.githubusercontent.com/ValveSoftware/openvr/$OPENVR_TAG/bin/$OPENVR_ARCH/libopenvr_api.so"
 PKG_DIR="$("$VENV/bin/python" -c 'import importlib.util, os; print(os.path.dirname(importlib.util.find_spec("openvr").origin))')"
 cp "$LIB_DIR/libopenvr_api.so" "$PKG_DIR/libopenvr_api_64.so"
+
+# On ARM64 pyopenvr tries to load libopenvr_api_64.so at import time, so the
+# Valve loader MUST be copied before we validate imports. Previously the test
+# failed even though the installer would have copied the missing library next.
+if ! "$VENV/bin/python" -c 'import openvr, PIL; print("==> SteamVR dashboard Python imports OK")'; then
+    echo "ERROR: OpenVR still cannot load after installing the $OPENVR_ARCH loader" >&2
+    echo "Try: bash $SRC_DIR/scripts/steamflow-doctor.sh" >&2
+    exit 1
+fi
 
 # Reading what the panels show needs one capability, given only to the small
 # helper that hands the recorder the on-screen buffer.
