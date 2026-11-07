@@ -3,6 +3,22 @@
 This repository is a fork of [MWGIH/SFRecorder](https://github.com/MWGIH/SFRecorder) (GPL-3.0-only).
 It retains the original Rust recording engine and uses the upstream prebuilt recording binary; the improvements below are to installation and the SteamVR dashboard. Credit and licensing for the original author remain intact.
 
+## Hey Frame voice integration (SteamFlow fork)
+
+This fork now supports **Hey Frame** voice commands through a user-private local UNIX socket in the existing SteamVR recorder dashboard, so Hey Frame never launches a second recording engine.
+
+After updating **both** [Hey Frame](https://github.com/SteamFlowYT/HeyFrame) and this SFRecorder fork, say:
+
+- **"Hey Frame, start recording"** to begin a recording with the current dashboard settings.
+- **"Hey Frame, stop recording"** to finish and save the current video.
+- **"Hey Frame, recording status"** to hear whether recording is active or paused.
+
+There is also a **Hey Frame** Listening / Off toggle inside the recorder's SteamVR dashboard. It enables or disables the separate Hey Frame user service and remembers the choice at future user logins. It refuses to enable listening while the older `frame-dictation.service` is running, to avoid known Volume Up input grabs. No hardware button events are intercepted or changed.
+
+The recorder continues to pause whenever its dashboard tab is visible. Speak "start recording" after closing that tab if you want to capture footage immediately; otherwise it will start paused. The recording control socket exists only when the recorder's dashboard process is running, and is accessible only to the headset user.
+
+**Safety:** The voice bridge only accepts `start`, `stop` and `status`. It never accepts shell commands, never starts a second capture process, and inherits SFRecorder's low-storage safety checks and file-saving logic. Actual voice and dashboard use must still be validated on Steam Frame hardware.
+
 ## One-command install or update on Steam Frame
 
 Open Konsole on the **Steam Frame itself** (not a Windows terminal) and run:
