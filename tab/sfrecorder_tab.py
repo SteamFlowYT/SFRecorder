@@ -355,7 +355,7 @@ class Menu:
             draw.text((rect[0] + 28, y), line, font=self.small_font, fill=color, anchor="la")
             y += 34
 
-    def render(self, s, recording, status, overlay, view_eye, popup):
+    def render(self, s, recording, status, overlay, view_eye, popup, voice_mode='missing'):
         """`popup` is "raw" (the Raw warning to confirm), "eye" (where to change the eye),
         "uninstall" (Uninstall pressed once, waiting for the second press) or None."""
         self.buttons = []
@@ -415,14 +415,19 @@ class Menu:
                 draw.text((760, 670), "Get it: " + OVERLAY_REPO, font=self.small_font,
                           fill=GREY, anchor="rm")
 
+        self._choice(draw, 673, "Hey Frame",
+                     "Listening" if voice_mode == "on" else ("Not installed" if voice_mode == "missing" else "Off"),
+                     None if voice_mode == "missing" else "voice",
+                     fill=self.ON if voice_mode == "on" else None)
+
         if status.startswith("!"):
             # Errors can be long: wrap them, and point to the full log.
-            lines = wrap(draw, status[2:], self.small_font, 680)[:3]
+            lines = wrap(draw, status[2:], self.small_font, 680)[:2]
             lines.append("Details: ~/.cache/sfrecorder/last-recording.log")
             for i, line in enumerate(lines):
-                draw.text((self.WIDTH // 2, 705 + 32 * i), line, font=self.small_font, fill=RED, anchor="mm")
+                draw.text((self.WIDTH // 2, 780 + 32 * i), line, font=self.small_font, fill=RED, anchor="mm")
         else:
-            draw.text((self.WIDTH // 2, 730), status, font=self.font, fill=WHITE, anchor="mm")
+            draw.text((self.WIDTH // 2, 795), status, font=self.font, fill=WHITE, anchor="mm")
         draw.text((self.WIDTH // 2, 820), "Saved to Videos/SFRecorder", font=self.small_font, fill=GREY, anchor="mm")
         draw.text((self.WIDTH // 2, 860), free_disk_label(), font=self.small_font, fill=GREY,
                   anchor="mm")
