@@ -1,3 +1,34 @@
+# SteamFlow Recorder — Steam Frame improvements
+
+This repository is a fork of [MWGIH/SFRecorder](https://github.com/MWGIH/SFRecorder) (GPL-3.0-only).
+It retains the original Rust recording engine and uses the upstream prebuilt recording binary; the improvements below are to installation and the SteamVR dashboard. Credit and licensing for the original author remain intact.
+
+## One-command install or update on Steam Frame
+
+Open Konsole on the **Steam Frame itself** (not a Windows terminal) and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SteamFlowYT/SFRecorder/main/steamflow-bootstrap.sh | bash
+```
+
+The bootstrap clones into `~/SteamFlowRecorder`, rather than overwriting an existing `~/SFRecorder` source checkout. The installer **does** replace the existing SFRecorder service, dashboard and binary in the normal per-user installation locations. It preserves recordings in `~/Videos/SFRecorder` and existing config in `~/.config/sfrecorder`. As in upstream, the helper requests privileged capability for reading headset panels.
+
+**SteamFlow additions:**
+- Repair broken/missing `pip` in the recorder's private Python environment (uses `ensurepip`, falling back to official PyPA over HTTPS).
+- Verify Python modules before finishing setup.
+- Prevent starting new recordings below 1 GiB free, and request a clean recording stop below 256 MiB (checked about every five seconds).
+- Display remaining storage in the VR dashboard; provide a tap-to-reset height control.
+- Read-only diagnostic script:
+  ```bash
+  bash ~/SteamFlowRecorder/scripts/steamflow-doctor.sh
+  ```
+
+**Current limitations:** Not yet tested on actual Steam Frame hardware. The Rust capture engine is unchanged; no instant replay, independent mic track, or additional hardware encoder modes are claimed. Storage safeguards are best-effort and cannot guarantee protection against a full disk.
+
+---
+
+## Original SFRecorder documentation
+
 # SFRecorder
 
 Records what the Steam Frame's panels show, Steam overlays included, with as
