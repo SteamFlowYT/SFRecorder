@@ -32,6 +32,10 @@ mkdir -p "$SHARE_DIR" "$LIB_DIR" "$BIN_DIR" "$UNIT_DIR" "$CONFIG_DIR" "$HOME/Vid
 echo "$SRC_DIR" > "$CONFIG_DIR/source_dir"
 echo "${SFRECORDER_TAG:-}" > "$CONFIG_DIR/release_tag"
 
+# SteamFlow recorder patches v1: repair Python before replacing any binaries.
+echo "==> Checking the recorder Python runtime"
+bash "$SRC_DIR/scripts/steamflow-venv.sh" "$VENV"
+
 echo "==> Installing the recorder"
 if [ -x "$SRC_DIR/target/release/sfrecorder" ]; then
     BUILD="$SRC_DIR/target/release"
@@ -74,9 +78,10 @@ install -m 755 "$SRC_DIR/tab/sfrecorder_tab.py" "$SHARE_DIR/sfrecorder_tab.py"
 install -m 755 "$SRC_DIR/uninstall.sh" "$SHARE_DIR/uninstall.sh"
 
 echo "==> Setting up the dashboard tab"
-[ -x "$VENV/bin/python" ] || python3 -m venv "$VENV"
-"$VENV/bin/pip" install --quiet --upgrade pip
-"$VENV/bin/pip" install --quiet "openvr==$PYOPENVR_VERSION" "pillow>=10.1"
+# The bin/pip launcher can exist even when the Python pip module is broken.
+"$VENV/bin/python" -m pip install --disable-pip-version-check --quiet --upgrade pip
+"$VENV/bin/python" -m pip install --disable-pip-version-check --quiet "openvr==$PYOPENVR_VERSION" "pillow>=10.1"
+"$VENV/bin/python" -c "import openvr, PIL" || { echo "ERROR: dashboard imports failed" >&2; exit 1; }
 
 # Valve's own OpenVR loader for this CPU: for the tab (pyopenvr only bundles
 # x86_64) and for the recorder, which reads the lens data through it.
