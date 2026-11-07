@@ -5,11 +5,21 @@ set -euo pipefail
 
 PYOPENVR_VERSION="2.12.1401"
 OPENVR_TAG="v2.12.14"   # matches the pyopenvr version above
-# SFRECORDER_TAG=test ./install.sh installs a test build instead of the latest release.
+# Prefer SteamFlow's ARM64 build when one has been published by GitHub
+# Actions. Until then, preserve the known-working upstream recorder binary.
+# Note: source changes alone cannot change recording FPS in a prebuilt binary.
+FORK_RELEASES="https://github.com/SteamFlowYT/SFRecorder/releases/latest/download"
+UPSTREAM_RELEASES="https://github.com/MWGIH/SFRecorder/releases/latest/download"
 if [ -n "${SFRECORDER_TAG:-}" ]; then
-    RELEASES="https://github.com/MWGIH/SFRecorder/releases/download/$SFRECORDER_TAG"
+    RELEASES="https://github.com/SteamFlowYT/SFRecorder/releases/download/$SFRECORDER_TAG"
+    echo "==> Using SteamFlow tagged recorder build: $SFRECORDER_TAG"
+elif curl -fsSIL --connect-timeout 7 --max-time 20 "$FORK_RELEASES/sfrecorder-$(uname -m).tar.gz" >/dev/null 2>&1; then
+    RELEASES="$FORK_RELEASES"
+    echo "==> Using SteamFlow recorder release (60 FPS default)"
 else
-    RELEASES="https://github.com/MWGIH/SFRecorder/releases/latest/download"
+    RELEASES="$UPSTREAM_RELEASES"
+    echo "==> SteamFlow encoder build not published yet; using the original recorder binary"
+    echo "    Recording FPS will stay at the upstream rate until the fork's Actions build is available."
 fi
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
