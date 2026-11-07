@@ -20,8 +20,43 @@ use sfrecorder::{audio, lens, now_us};
 
 /// The widest Raw recording the encoder is asked for.
 const RAW_MAX_WIDTH: u32 = 3840;
-/// Above this the recording takes every second (or third) panel frame.
-const MAX_FPS: f64 = 90.0;
+/// Limit recording work; headset rendering stays at its original refresh rate.
+const DEFAULT_MAX_FPS: f64 = 60.0;
+
+/// Drop frames BEFORE Vulkan conversion and HEVC encoding, preserving the
+/// average target rate even when the panel rate is not an exact multiple
+/// (e.g. 90 Hz -> 60 recorded fps, not 45).
+///
+/// MP4 timestamps continue to come from the actual vblank clock. At 90 Hz
+/// the recorded frame intervals alternate (one/two vblanks), so playback
+/// preserves the capture timing instead of pretending to have constant pacing.
+struct FramePacer {
+    refresh_hz: f64,
+    capture_fps: f64,
+    phase: f64,
+}
+
+impl FramePacer {
+    fn new(refresh_hz: f64, max_fps: f64) -> Self {
+        let capture_fps = refresh_hz.min(max_fps);
+        Self { refresh_hz, capture_fps, phase: refresh_hz - capture_fps }
+    }
+
+    fn reset(&mut self) {
+        // First available vblank after resuming may start the new segment.
+        self.phase = self.refresh_hz - self.capture_fps;
+    }
+
+    fn should_capture(&mut self) -> bool {
+        self.phase += self.capture_fps;
+        if self.phase + 1e-7 < self.refresh_hz {
+            return false;
+        }
+        self.phase -= self.refresh_hz;
+        true
+    }
+}
+
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -44,11 +79,12 @@ struct Args {
     card: PathBuf,
     /// Degrees to aim the 16:9 picture above the built-in framing.
     height: f64,
+    max_fps: f64,
 }
 
 
 fn parse_args() -> Result<Args> {
-    let mut a = Args { shape: Shape::Wide, eye: None, mic: false, hud: true, out: None, card: PathBuf::from("/dev/dri/card0"), height: 0.0 };
+    let mut a = Args { shape: Shape::Wide, eye: None, mic: false, hud: true, out: None, card: PathBuf::from("/dev/dri/card0"), height: 0.0, max_fps: DEFAULT_MAX_FPS };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = || it.next().with_context(|| format!("{arg} needs a value"));
@@ -76,6 +112,11 @@ fn parse_args() -> Result<Args> {
                 let v = value()?;
                 a.height = v.parse::<f64>().ok().filter(|h| h.is_finite() && h.abs() <= 45.0).with_context(|| format!("--height {v}: degrees between -45 and 45"))?;
             }
+            "--max-fps" => {
+                let v = value()?;
+                a.max_fps = v.parse::<f64>().ok().filter(|f| f.is_finite() && (1.0..=240.0).contains(f))
+                    .with_context(|| format!("--max-fps {v}: must be a number from 1 to 240"))?;
+            }
             "--version" => {
                 println!("{}", sfrecorder::VERSION);
                 std::process::exit(0);
@@ -97,7 +138,7 @@ fn parse_args() -> Result<Args> {
                 std::process::exit(0);
             }
             "-h" | "--help" => {
-                println!("usage: sfrecorder [--shape 16:9|raw] [--eye left|right|auto] [--height DEGREES] [--mic] [--hud show|hide] [--out FILE] [--version]");
+                println!("usage: sfrecorder [--shape 16:9|raw] [--eye left|right|auto] [--height DEGREES] [--max-fps FPS] [--mic] [--hud show|hide] [--out FILE] [--version]");
                 std::process::exit(0);
             }
             s => bail!("unknown option {s}"),
@@ -176,8 +217,11 @@ fn run() -> Result<()> {
     // Only the lens data was needed; don't stay connected to SteamVR.
     drop(vr);
 
-    let every = (kms.refresh_hz / MAX_FPS).ceil().max(1.0) as u64;
-    let fps = kms.refresh_hz / every as f64;
+    if !kms.refresh_hz.is_finite() || kms.refresh_hz <= 0.0 {
+        bail!("invalid panel refresh rate {:.2} Hz", kms.refresh_hz);
+    }
+    let mut pacer = FramePacer::new(kms.refresh_hz, args.max_fps);
+    let fps = pacer.capture_fps;
     let bitrate = if args.shape == Shape::Raw { 40_000_000 } else { 20_000_000 };
     let mut gpu = Gpu::new(&grid, out_w, out_h)?;
     let (mut encoder, targets) = Encoder::open(out_w, out_h, fps, bitrate)?;
@@ -196,12 +240,12 @@ fn run() -> Result<()> {
     let mut paused_total = 0u64;
     let mut resumed_at = start;
     let mut packets: Vec<Packet> = Vec::new();
-    let mut frame = 0u64;
     let mut last_status = 0u64;
     let mut last_log = start;
     let mut stats = Stats::default();
     eprintln!(
-        "recording {out_w}x{out_h} at {fps:.2} fps on {}, GPU queue {}; encoder {}",
+        "recording {out_w}x{out_h} at up to {fps:.2} fps (panel {:.2} Hz) on {}, GPU queue {}; encoder {}",
+        kms.refresh_hz,
         gpu.device_name,
         if gpu.low_priority { "low priority" } else { "normal priority" },
         encoder.info
@@ -210,7 +254,6 @@ fn run() -> Result<()> {
 
     while !STOP.load(Ordering::Relaxed) {
         let vblank = kms.wait_vblank()?;
-        frame += 1;
         match commands.try_recv() {
             Ok(Command::Stop) | Err(TryRecvError::Disconnected) => break,
             Ok(Command::Pause) if paused_since.is_none() => paused_since = Some(vblank),
@@ -218,6 +261,7 @@ fn run() -> Result<()> {
                 if let Some(t) = paused_since.take() {
                     paused_total += vblank.saturating_sub(t);
                     resumed_at = vblank;
+                    pacer.reset();
                 }
             }
             Ok(Command::Hud(show)) => view.write(show),
@@ -244,7 +288,7 @@ fn run() -> Result<()> {
             encoder.encode(target, pts.max(0) as u64)?;
             stats.encoded += 1;
         }
-        if paused_since.is_some() || !frame.is_multiple_of(every) {
+        if paused_since.is_some() || !pacer.should_capture() {
             continue;
         }
 
@@ -341,4 +385,42 @@ fn capture(kms: &mut Kms, gpu: &mut Gpu, encoder: &mut Encoder, pts: i64) -> Res
         return Err(e);
     }
     Ok(true)
+}
+
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::FramePacer;
+
+    #[test]
+    fn caps_common_refresh_rates_at_sixty_frames() {
+        for refresh in [60.0, 72.0, 80.0, 90.0, 120.0, 144.0] {
+            let mut pacer = FramePacer::new(refresh, 60.0);
+            let total = (refresh * 10.0) as usize;
+            let captured = (0..total).filter(|_| pacer.should_capture()).count();
+            assert_eq!(captured, 600, "wrong 10-second capture count at {refresh} Hz");
+        }
+    }
+
+    #[test]
+    fn records_every_frame_below_cap() {
+        let mut pacer = FramePacer::new(50.0, 60.0);
+        assert_eq!((0..500).filter(|_| pacer.should_capture()).count(), 500);
+    }
+
+    #[test]
+    fn ninety_hertz_does_not_collapse_to_forty_five() {
+        let mut pacer = FramePacer::new(90.0, 60.0);
+        let frames: Vec<bool> = (0..90).map(|_| pacer.should_capture()).collect();
+        assert_eq!(frames.iter().filter(|&&x| x).count(), 60);
+        assert!(frames[0], "recording should start at first available vblank");
+        pacer.reset();
+        assert!(pacer.should_capture());
+    }
+
+    #[test]
+    fn custom_ninety_cap_preserves_existing_behavior() {
+        let mut pacer = FramePacer::new(90.0, 90.0);
+        assert!((0..900).all(|_| pacer.should_capture()));
+    }
 }
