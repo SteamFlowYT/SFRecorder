@@ -511,10 +511,19 @@ def run():
     shown_seconds = -1
     last_storage_check = 0.0
     stopped_for_storage = False
+    voice_mode = hey_frame_state()
+    voice_busy = False
+    voice_messages = queue.Queue()
+    next_voice_poll = 0.0
+    try:
+        voice_bridge = VoiceControlSocket()
+    except (OSError, RuntimeError) as exc:
+        print("SFRecorder voice bridge unavailable:", exc, file=sys.stderr)
+        voice_bridge = None
     event = openvr.VREvent_t()
 
     def redraw():
-        img = menu.render(settings, engine is not None, status, overlay_status, view_eye, popup)
+        img = menu.render(settings, engine is not None, status, overlay_status, view_eye, popup, voice_mode)
         overlay.setOverlayRaw(handle, to_texture(img), img.width, img.height, 4)
 
     def start():
@@ -540,8 +549,64 @@ def run():
         if visible:
             engine.send("pause")
 
+
+    def voice_change_worker(turn_on):
+        """Run systemctl off the dashboard UI thread; preserve startup opt-in."""
+        if not os.path.isfile(HEY_FRAME_BIN):
+            voice_messages.put((False, "Hey Frame not installed"))
+            return
+        try:
+            if turn_on:
+                blocked = subprocess.run(["systemctl", "--user", "is-active", "--quiet",
+                                          "frame-dictation.service"], timeout=2,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if blocked.returncode == 0:
+                    voice_messages.put((False, "Stop frame-dictation.service first"))
+                    return
+            command = "enable" if turn_on else "disable"
+            result = subprocess.run(["systemctl", "--user", command, "--now", "hey-frame.service"],
+                                    capture_output=True, text=True, timeout=12)
+            if result.returncode == 0:
+                voice_messages.put((True, "Hey Frame listening" if turn_on else "Hey Frame stopped"))
+            else:
+                voice_messages.put((False, (result.stderr or "Unable to change voice service")[:120]))
+        except (OSError, subprocess.SubprocessError) as exc:
+            voice_messages.put((False, str(exc)[:120]))
+
+    def voice_request(command):
+        """All recording operations go through the same Engine object as the UI."""
+        nonlocal engine, status
+        if command == "start":
+            if engine:
+                return "Recording is already active."
+            start()
+            if engine:
+                redraw()
+                return "Recorder started. Recording will begin now."
+            return (status.lstrip("! ") or "Unable to start recording.")[:220]
+        if command == "stop":
+            if engine:
+                engine.send("stop")
+                status = "Saving..."
+                redraw()
+                return "Stopping recording. Saving video."
+            return "There is no active recording."
+        if command == "status":
+            if not engine:
+                return "No recording in progress."
+            state = engine.status.get("state", "starting")
+            seconds = int(engine.status.get("seconds", 0))
+            if state == "paused":
+                return "Recording paused while the recorder dashboard is visible."
+            if state == "recording":
+                return f"Recording active. {seconds} seconds captured."
+            if state in ("finishing", "finished"):
+                return "Recorder is finishing and saving video."
+            return "Recorder is starting."
+        return "Unsupported recorder command."
+
     def act(action):
-        nonlocal popup, eye_popup_pinned, status, view_eye
+        nonlocal popup, eye_popup_pinned, status, view_eye, voice_busy
         if action == "record":
             if engine:
                 engine.send("stop")
@@ -569,6 +634,12 @@ def run():
             popup = "eye" if eye_popup_pinned else None
         elif action == "mic":
             settings.mic = not settings.mic
+        elif action == "voice":
+            if not voice_busy and voice_mode != "missing":
+                voice_busy = True
+                status = "Updating Hey Frame listening status..."
+                threading.Thread(target=voice_change_worker, args=(voice_mode != "on",),
+                                 daemon=True).start()
         elif action == "height-reset":
             settings.height = 0
         elif action in ("height-up", "height-down"):
@@ -617,11 +688,31 @@ def run():
     redraw()
     while True:
         now = time.monotonic()
+        if voice_bridge is not None:
+            voice_bridge.poll(voice_request)
+        try:
+            while True:
+                success, message = voice_messages.get_nowait()
+                voice_busy = False
+                voice_mode = hey_frame_state()
+                status = message if success else "! " + message
+                redraw()
+        except queue.Empty:
+            pass
+        if now >= next_voice_poll and not voice_busy:
+            next_voice_poll = now + 2.0
+            fresh_voice = hey_frame_state()
+            if fresh_voice != voice_mode:
+                voice_mode = fresh_voice
+                if visible:
+                    redraw()
         while vr_system.pollNextEvent(event):
             if event.eventType == openvr.VREvent_Quit:
                 if engine:
                     engine.send("stop")
                 vr_system.acknowledgeQuit_Exiting()
+                if voice_bridge is not None:
+                    voice_bridge.close()
                 return
 
         while overlay.pollNextOverlayEvent(handle, event)[0]:
