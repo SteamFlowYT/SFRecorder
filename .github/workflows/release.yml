@@ -51,6 +51,11 @@ jobs:
           SFRECORDER_VERSION: ${{ github.event.inputs.tag || (github.ref_type == 'tag' && github.ref_name) || (github.ref_name == 'main' && format('v0.1.{0}', github.run_number)) || 'test' }}
         run: PKG_CONFIG_PATH="$PWD/build/ffmpeg/lib/pkgconfig" cargo build --release --locked
 
+      - name: Verify 60 FPS frame pacing
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/build/ffmpeg/lib/pkgconfig
+        run: cargo test --locked --release --bin sfrecorder pacing_tests
+
       - name: Package
         run: |
           tar -czf sfrecorder-aarch64.tar.gz -C target/release sfrecorder sfrecorder-grab
