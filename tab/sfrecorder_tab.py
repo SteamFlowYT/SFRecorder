@@ -411,9 +411,6 @@ class Menu:
             draw.text((60, 625), "FPS overlay", font=self.font, fill=GREY, anchor="lm")
             draw.text((760, 625), "Not installed" if overlay == "missing" else "Off", font=self.font,
                       fill=GREY, anchor="rm")
-            if overlay == "missing":
-                draw.text((760, 670), "Get it: " + OVERLAY_REPO, font=self.small_font,
-                          fill=GREY, anchor="rm")
 
         self._choice(draw, 673, "Hey Frame",
                      "Listening" if voice_mode == "on" else ("Not installed" if voice_mode == "missing" else "Off"),
@@ -582,7 +579,7 @@ def run():
             start()
             if engine:
                 redraw()
-                return "Recorder started. Recording will begin now."
+                return "Recorder is starting. Ask recording status to confirm."
             return (status.lstrip("! ") or "Unable to start recording.")[:220]
         if command == "stop":
             if engine:
