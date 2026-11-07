@@ -15,12 +15,15 @@ import json
 import os
 import queue
 import shlex
+import socket
+import stat
 import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import openvr
 from PIL import Image, ImageDraw, ImageFont
@@ -42,6 +45,72 @@ UNINSTALL_SCRIPT = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOM
                                 "sfrecorder", "uninstall.sh")
 UPDATE_LOG = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "sfrecorder", "update.log")
 LOG_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "sfrecorder", "last-recording.log")
+
+HEY_FRAME_BIN = os.path.join(HOME, ".local", "bin", "hey-frame")
+
+def hey_frame_state():
+    """Read-only Hey Frame user-service status for dashboard toggle."""
+    if not os.path.isfile(HEY_FRAME_BIN):
+        return "missing"
+    try:
+        proc = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "hey-frame.service"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)
+        return "on" if proc.returncode == 0 else "off"
+    except (OSError, subprocess.SubprocessError):
+        return "off"
+
+
+class VoiceControlSocket:
+    """User-private UNIX socket: commands go to the existing recording engine."""
+    def __init__(self):
+        runtime = os.environ.get("XDG_RUNTIME_DIR")
+        if not runtime:
+            raise RuntimeError("XDG_RUNTIME_DIR missing")
+        folder = Path(runtime) / "sfrecorder"
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if folder.stat().st_uid != os.getuid():
+            raise RuntimeError("Unsafe recorder directory owner")
+        folder.chmod(0o700)
+        self.path = folder / "voice-control.sock"
+        if self.path.exists() or self.path.is_symlink():
+            old = self.path.lstat()
+            if not stat.S_ISSOCK(old.st_mode) or old.st_uid != os.getuid():
+                raise RuntimeError("Unsafe existing recorder control socket")
+            self.path.unlink()
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            self.server.bind(str(self.path))
+            os.chmod(self.path, 0o600)
+            self.server.listen(4)
+            self.server.setblocking(False)
+        except Exception:
+            self.server.close()
+            raise
+
+    def poll(self, handler):
+        for _ in range(4):
+            try:
+                conn, _ = self.server.accept()
+            except (OSError, BlockingIOError):
+                return
+            with conn:
+                try:
+                    conn.settimeout(0.05)
+                    command = conn.recv(80).decode("ascii", "strict").strip()
+                    result = handler(command) if command in ("start", "stop", "status") else "Unknown recorder command."
+                    conn.sendall(json.dumps({"message": result[:220]}).encode("utf-8"))
+                except (OSError, UnicodeError, ValueError):
+                    pass
+
+    def close(self):
+        self.server.close()
+        try:
+            if self.path.is_socket():
+                self.path.unlink()
+        except OSError:
+            pass
+
+
 
 # SFrameOverlay, if it's installed: its install folder and its on/off file.
 OVERLAY_SCRIPT = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local", "share")),
