@@ -15,6 +15,7 @@ import json
 import os
 import queue
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -24,7 +25,10 @@ import time
 import openvr
 from PIL import Image, ImageDraw, ImageFont
 
+# SteamFlow recorder patches v1. Preserve APP_KEY to avoid duplicate overlays.
 APP_KEY = "gamesinhand.sfrecorder"
+MIN_START_FREE = 1024 ** 3  # Refuse to start under 1 GiB free.
+AUTO_STOP_FREE = 256 * 1024 ** 2  # Finish before the disk fills.
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "sfrecorder")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")
@@ -92,6 +96,28 @@ def read_text(path):
             return f.read().strip()
     except OSError:
         return None
+
+
+def free_disk_bytes():
+    """None if the destination is unavailable; never crash the tab on a disk probe."""
+    try:
+        return shutil.disk_usage(OUTPUT_DIR).free
+    except OSError:
+        return None
+
+
+def free_disk_label():
+    free = free_disk_bytes()
+    return "Storage unavailable" if free is None else f"Free space: {free / 1024 ** 3:.1f} GiB"
+
+
+def upstream_is_origin(source):
+    try:
+        cp = subprocess.run(["git", "-C", source, "remote", "get-url", "origin"],
+                            capture_output=True, text=True, timeout=3)
+        return cp.returncode == 0 and "MWGIH/SFRecorder" in cp.stdout
+    except (OSError, subprocess.SubprocessError):
+        return True
 
 
 def helper_unlocked():
@@ -266,7 +292,7 @@ class Menu:
         self.buttons = []
         img = Image.new("RGBA", (self.WIDTH, self.HEIGHT), self.BG)
         draw = ImageDraw.Draw(img)
-        draw.text((self.WIDTH // 2, 50), "SFRecorder", font=self.title_font, fill=WHITE, anchor="mm")
+        draw.text((self.WIDTH // 2, 50), "SteamFlow Recorder", font=self.title_font, fill=WHITE, anchor="mm")
 
         if popup == "raw":
             lines = wrap(draw, RAW_WARNING, self.small_font, 640)
@@ -305,8 +331,8 @@ class Menu:
         else:
             draw.text((60, 535), "Height", font=self.font, fill=GREY, anchor="lm")
             self._button(draw, (400, 500, 480, 570), "\u25bc", None if locked else "height-down")
-            draw.text((580, 535), f"{s.height:+d}\u00b0" if s.height else "0\u00b0", font=self.font, fill=WHITE,
-                      anchor="mm")
+            self._button(draw, (505, 500, 655, 570), f"{s.height:+d}\u00b0" if s.height else "0\u00b0",
+                         None if locked else "height-reset", fill=self.BUTTON)
             self._button(draw, (680, 500, 760, 570), "\u25b2", None if locked else "height-up")
 
         if overlay == "on":
@@ -329,7 +355,7 @@ class Menu:
         else:
             draw.text((self.WIDTH // 2, 730), status, font=self.font, fill=WHITE, anchor="mm")
         draw.text((self.WIDTH // 2, 820), "Saved to Videos/SFRecorder", font=self.small_font, fill=GREY, anchor="mm")
-        draw.text((self.WIDTH // 2, 860), "Share them from the SCopy tab", font=self.small_font, fill=GREY,
+        draw.text((self.WIDTH // 2, 860), free_disk_label(), font=self.small_font, fill=GREY,
                   anchor="mm")
         if recording:
             draw.text((self.WIDTH // 2, 930), "Paused while this menu is open", font=self.small_font, fill=YELLOW,
@@ -391,7 +417,7 @@ def run():
     vr_system = openvr.init(openvr.VRApplication_Overlay)
     overlay = openvr.VROverlay()
     menu = Menu()
-    handle, thumb_handle = overlay.createDashboardOverlay(APP_KEY + ".dashboard", "SFRecorder")
+    handle, thumb_handle = overlay.createDashboardOverlay(APP_KEY + ".dashboard", "SteamFlow Recorder")
     overlay.setOverlayWidthInMeters(handle, 1.5)
     overlay.setOverlayInputMethod(handle, openvr.VROverlayInputMethod_Mouse)
     scale = openvr.HmdVector2_t()
@@ -409,6 +435,8 @@ def run():
     next_overlay_poll = 0.0
     view_eye = vr_view_eye()
     shown_seconds = -1
+    last_storage_check = 0.0
+    stopped_for_storage = False
     event = openvr.VREvent_t()
 
     def redraw():
@@ -416,12 +444,24 @@ def run():
         overlay.setOverlayRaw(handle, to_texture(img), img.width, img.height, 4)
 
     def start():
-        nonlocal engine, status
+        nonlocal engine, status, stopped_for_storage
+        free = free_disk_bytes()
+        if free is None:
+            status = "! Recording folder unavailable; check storage"
+            return
+        if free < MIN_START_FREE:
+            status = "! Under 1 GiB free; clear space before recording"
+            return
+        stopped_for_storage = False
         if not os.access(ENGINE, os.X_OK):
             status = "! Engine missing, run the installer again"
             return
         eye = None if settings.eye == "auto" else settings.eye
-        engine = Engine(settings, eye or view_eye)
+        try:
+            engine = Engine(settings, eye or view_eye)
+        except OSError as exc:
+            status = "! Cannot start recorder: " + str(exc)
+            return
         status = "Starting..."
         if visible:
             engine.send("pause")
@@ -455,6 +495,8 @@ def run():
             popup = "eye" if eye_popup_pinned else None
         elif action == "mic":
             settings.mic = not settings.mic
+        elif action == "height-reset":
+            settings.height = 0
         elif action in ("height-up", "height-down"):
             step = HEIGHT_STEP if action == "height-up" else -HEIGHT_STEP
             settings.height = max(-HEIGHT_LIMIT, min(HEIGHT_LIMIT, settings.height + step))
@@ -464,6 +506,8 @@ def run():
                 status = "! Stop recording first to update"
             elif not (source and os.path.isdir(os.path.join(source, ".git"))):
                 status = "! Update needs the folder the install line made"
+            elif upstream_is_origin(source):
+                status = "! Set up your GitHub fork before updating this custom build"
             else:
                 tag = read_text(RELEASE_TAG_FILE) or ""
                 os.makedirs(os.path.dirname(UPDATE_LOG), exist_ok=True)
@@ -536,6 +580,15 @@ def run():
                 popup, eye_popup_pinned = None, False
 
         if engine:
+            # Check while the tab is hidden too, protecting unfinished MP4s.
+            if now - last_storage_check >= 5.0:
+                last_storage_check = now
+                free = free_disk_bytes()
+                if (free is not None and free < AUTO_STOP_FREE
+                        and not stopped_for_storage):
+                    stopped_for_storage = True
+                    status = "Low disk space: finishing recording..."
+                    engine.send("stop")
             alive = engine.poll()
             st = engine.status
             if not alive:
