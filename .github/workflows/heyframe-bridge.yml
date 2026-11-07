@@ -29,6 +29,7 @@ jobs:
           assert any(isinstance(n, ast.ClassDef) and n.name == 'VoiceControlSocket' for n in tree.body)
           assert 'voice_bridge.poll(voice_request)' in source
           assert 'action == "voice"' in source
-          assert 'recording' not in ''  # structurally valid test fixture
+          assert 'def voice_request(command):' in source
+          assert 'class VoiceControlSocket:' in source
           print('Recorder bridge and voice toggle syntax: PASS')
           PY
