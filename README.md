@@ -23,7 +23,13 @@ The bootstrap clones into `~/SteamFlowRecorder`, rather than overwriting an exis
   bash ~/SteamFlowRecorder/scripts/steamflow-doctor.sh
   ```
 
-**Current limitations:** Not yet tested on actual Steam Frame hardware. The Rust capture engine is unchanged; no instant replay, independent mic track, or additional hardware encoder modes are claimed. Storage safeguards are best-effort and cannot guarantee protection against a full disk.
+**60 FPS capture cap (source change, awaiting a fork-built binary):** The Rust engine now defaults to a 60 FPS recording cap (custom CLI `--max-fps 90` retains the previous rate). Fractional frame pacing preserves 60 FPS on a 90 Hz headset instead of dropping to 45 FPS, skipping work **before GPU conversion and HEVC encoding**. Audio and MP4 timestamps still use the original clock. For modes above 60 Hz that are not multiples of 60, frame intervals can alternate; there is no interpolation and no guarantee of a specific gaming-performance improvement. The headset's own refresh rate is unchanged.
+
+**Build needed before this affects recordings:** Your GitHub fork currently has no published recorder releases. In GitHub, open **Actions**, enable workflows for this fork if prompted, select **Release**, select **Run workflow** on main and set its `tag` input to `v0.2.0` (not the default `test`, which publishes only a pre-release). When the build finishes successfully and publishes `sfrecorder-aarch64.tar.gz` to a release, rerun the one-line install command above. Until that release exists, the installer intentionally falls back to the known-working upstream recorder binary, which still uses its original FPS behavior.
+
+To confirm the new binary is actually in use, start and stop a short recording, then read `~/.cache/sfrecorder/last-recording.log`. Its startup line will say `at up to 60.00 fps`, including the panel refresh rate.
+
+**Current limitations:** The 60 FPS source change has been checked with timing simulations but is not yet compiled and tested on actual Steam Frame hardware. No instant replay, independent mic track, or new hardware encoder modes are claimed. Storage safeguards are best-effort and cannot guarantee protection against a full disk.
 
 ---
 
